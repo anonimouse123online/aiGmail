@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inbox - SmartMail</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-layout">
+        <!-- Navbar -->
+        <header class="navbar">
+            <div class="logo">SmartMail</div>
+            <div class="user-menu">
+                <div class="user-info" style="text-align: right; margin-right: 12px;">
+                    <span id="userName"
+                        style="font-size: 14px; font-weight: 600; display: block; line-height: 1.2;">Loading...</span>
+                    <span id="userEmail"
+                        style="font-size: 11px; color: rgba(255,255,255,0.6); display: block;">email@example.com</span>
+                </div>
+                <div class="user-avatar" id="userAvatar"
+                    style="background-size: cover; background-position: center; border: 1px solid rgba(255,255,255,0.2);">
+                </div>
+                <button class="btn-logout" id="logoutBtn">Logout</button>
+            </div>
+        </header>
+
+        <!-- Sidebar (Email List) -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>Inbox</h2>
+            </div>
+            <div id="emailList" class="email-list">
+                <!-- Emails will be loaded here -->
+                <div class="empty-state">Loading emails...</div>
+            </div>
+        </aside>
+
+        <!-- Main Panel (Email View + Reply) -->
+        <main class="main-panel" id="mainPanel">
+            <div id="emailView" class="email-view">
+                <div class="empty-state">
+                    <h3>Select an email to view</h3>
+                    <p>Your AI assistant is ready to help.</p>
+                </div>
+            </div>
+
+            <!-- Reply Generator Panel (Initially Hidden) -->
+            <div id="replyPanel" class="reply-panel" style="display: none;">
+                <div class="reply-header">
+                    <div class="tone-selector">
+                        <button class="tone-btn active" data-tone="professional">Professional</button>
+                        <button class="tone-btn" data-tone="friendly">Friendly</button>
+                        <button class="tone-btn" data-tone="direct">Short & Direct</button>
+                    </div>
+                    <button class="btn-secondary" id="regenerateBtn">Regenerate</button>
+                </div>
+
+                <div style="position: relative;">
+                    <div id="replyLoading" class="loading-overlay">
+                        <span>Generating reply...</span>
+                    </div>
+                    <textarea id="replyBox" class="reply-box" placeholder="AI will generate a reply here..."></textarea>
+                </div>
+
+                <div class="char-count"><span id="charCount">0</span> characters</div>
+
+                <div class="reply-actions">
+                    <button class="btn-primary" id="sendReplyBtn">Send Reply</button>
+                    <button class="btn-secondary" id="copyReplyBtn">Copy Reply</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Scripts -->
+    <script type="module" src="auth.js"></script>
+    <script type="module" src="gmail.js"></script>
+    <script type="module" src="ai.js"></script>
+    <script type="module">
+        import auth from './auth.js';
+        import gmail from './gmail.js';
+        import ai from './ai.js';
+
+        // Protected route check
+        if (!auth.isLoggedIn()) {
+            window.location.href = 'index.html';
+        }
+
+        // Initialize UI Elements
+        const userNameEl = document.getElementById('userName');
+        const userEmailEl = document.getElementById('userEmail');
+        const userAvatarEl = document.getElementById('userAvatar');
+        const emailListEl = document.getElementById('emailList');
+        const emailViewEl = document.getElementById('emailView');
+        const replyPanel = document.getElementById('replyPanel');
+        const replyBox = document.getElementById('replyBox');
+        const charCountEl = document.getElementById('charCount');
+        const replyLoading = document.getElementById('replyLoading');
+
+        let currentEmail = null;
+        let selectedTone = 'professional';
+
+        async function initApp() {
+            // Load User Profile
+            const profile = await gmail.getUserProfile();
+            if (profile) {
+                userNameEl.textContent = profile.name || 'User';
+                userEmailEl.textContent = profile.email || '';
+                if (profile.picture) {
+                    userAvatarEl.style.backgroundImage = `url(${profile.picture})`;
+                    userAvatarEl.textContent = ''; // Remove placeholder icon
+                }
+            } else {
+                userNameEl.textContent = 'User';
+            }
+
+            // Load Inbox
+            loadInbox();
+        }
+
+        async function loadInbox() {
+            try {
+                const emails = await gmail.getRecentEmails(50);
+                renderEmailList(emails);
+            } catch (error) {
+                showToast('Error loading inbox: ' + error.message);
+            }
+        }
+
+        function renderEmailList(emails) {
+            if (emails.length === 0) {
+                emailListEl.innerHTML = '<div class="empty-state">No emails found</div>';
+                return;
+            }
+
+            emailListEl.innerHTML = emails.map(email => `
+                <div class="email-item" data-id="${email.id}">
+                    <span class="sender">${email.from}</span>
+                    <div class="subject">${email.subject}</div>
+                    <div class="preview">${email.snippet}</div>
+                </div>
+            `).join('');
+
+            document.querySelectorAll('.email-item').forEach(item => {
+                item.addEventListener('click', async () => {
+                    document.querySelectorAll('.email-item').forEach(el => el.classList.remove('active'));
+                    item.classList.add('active');
+                    const emailId = item.dataset.id;
+                    await loadEmailDetail(emailId);
+                });
+            });
+        }
+
+        async function loadEmailDetail(id) {
+            try {
+                const email = await gmail.getEmailDetails(id);
+                currentEmail = email;
+
+                emailViewEl.innerHTML = `
+                    <div class="email-view-header">
+                        <h2>${email.subject}</h2>
+                        <div class="email-meta">
+                            <span>From: <strong>${email.from}</strong></span>
+                            <span>${email.date}</span>
+                        </div>
+                    </div>
+                    <div class="email-body">${email.body}</div>
+                `;
+
+                replyPanel.style.display = 'block';
+                replyBox.value = '';
+                updateCharCount();
+
+                // Show on mobile
+                if (window.innerWidth <= 768) {
+                    document.getElementById('mainPanel').classList.add('active');
+                }
+            } catch (error) {
+                showToast('Error loading email details: ' + error.message);
+            }
+        }
+
+        async function generateReply() {
+            if (!currentEmail) return;
+
+            replyLoading.classList.add('active');
+            try {
+                const reply = await ai.generateReply(currentEmail.body, selectedTone);
+                replyBox.value = reply;
+                updateCharCount();
+            } catch (error) {
+                showToast('Error generating reply: ' + error.message);
+            } finally {
+                replyLoading.classList.remove('active');
+            }
+        }
+
+        async function sendReply() {
+            const body = replyBox.value;
+            if (!body) return;
+
+            try {
+                await gmail.sendReply(currentEmail.id, currentEmail.from, currentEmail.subject, body);
+                showToast('Reply sent successfully!');
+                replyBox.value = '';
+                updateCharCount();
+            } catch (error) {
+                showToast('Error sending reply: ' + error.message);
+            }
+        }
+
+        function showToast(message) {
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.textContent = message;
+            document.getElementById('toastContainer').appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        function updateCharCount() {
+            charCountEl.textContent = replyBox.value.length;
+        }
+
+        // Event Listeners
+        document.getElementById('logoutBtn').addEventListener('click', () => auth.logout());
+        document.getElementById('regenerateBtn').addEventListener('click', () => generateReply());
+        document.getElementById('sendReplyBtn').addEventListener('click', () => sendReply());
+        document.getElementById('copyReplyBtn').addEventListener('click', () => {
+            navigator.clipboard.writeText(replyBox.value);
+            showToast('Copied to clipboard!');
+        });
+
+        document.querySelectorAll('.tone-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tone-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                selectedTone = btn.dataset.tone;
+                generateReply();
+            });
+        });
+
+        replyBox.addEventListener('input', updateCharCount);
+
+        // Initial Load
+        initApp();
+    </script>
+</body>
+
+</html>
